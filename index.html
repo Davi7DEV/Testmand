@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mapa Surf e Postos</title>
+
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css"/>
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css"/>
+
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial;background:#0f1724;color:white;overflow:hidden;}
+#map{height:100vh;width:100vw;opacity:0;transition:opacity .6s ease;}
+#splash{position:fixed;width:100%;height:100%;background:linear-gradient(135deg,#0f1724,#151c2f);display:flex;align-items:center;justify-content:center;flex-direction:column;z-index:5000;transition:opacity .6s ease;}
+.loader{width:60px;height:60px;border:5px solid rgba(255,255,255,0.1);border-top:5px solid #4da3ff;border-radius:50%;animation:spin 1s linear infinite;margin-bottom:20px;}
+@keyframes spin{100%{transform:rotate(360deg);}}
+#locButton{position:fixed;bottom:20px;right:20px;width:50px;height:50px;background:#4da3ff;border-radius:50%;display:flex;align-items:center;justify-content:center;cursor:pointer;z-index:6000;box-shadow:0 0 10px rgba(77,163,255,.8);font-size:22px;}
+.user-icon{width:18px;height:18px;background:#007bff;border:3px solid white;border-radius:50%;box-shadow:0 0 15px rgba(0,123,255,.9);}
+.poi-ios{display:flex;align-items:center;gap:4px;font-size:11px;}
+.poi-ios .icon{width:16px;height:16px;border-radius:50%;background:#4da3ff;display:flex;align-items:center;justify-content:center;font-size:10px;}
+.poi-ios .label{background:rgba(15,23,36,0.85);padding:2px 5px;border-radius:8px;white-space:nowrap;backdrop-filter:blur(4px);}
+.leaflet-popup-content-wrapper{background:rgba(25,30,45,0.95);border-radius:16px;color:white;}
+.leaflet-popup-tip{background:rgba(25,30,45,0.95);}
+.popup-card{padding:10px;}
+.popup-title{font-size:14px;font-weight:600;color:#4da3ff;margin-bottom:4px;}
+.popup-info{font-size:11px;margin-bottom:4px;}
+.popup-btn{display:inline-block;padding:6px 10px;background:#4da3ff;border-radius:8px;font-size:12px;text-decoration:none;color:white;}
+.popup-btn:hover{background:#3b8de0;}
+.wave-label{
+  color:white;
+  font-size:12px;
+  font-weight:bold;
+  text-align:center;
+  text-shadow:0 0 2px black;
+  pointer-events:none;
+}
+</style>
+</head>
+<body>
+
+<div id="splash">
+  <div class="loader"></div>
+  <div>Carregando...</div>
+</div>
+
+<div id="map"></div>
+<div id="locButton">📍</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+
+<script>
+let map = L.map('map',{zoomControl:false}).setView([-20.400,-40.300],15);
+
+L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',{
+  attribution:'© OpenStreetMap © CARTO'
+}).addTo(map);
+
+/* GEOLOCALIZAÇÃO */
+let userLatLng = null;
+let userMarker = null;
+let accuracyCircle = null;
+
+if(navigator.geolocation){
+  navigator.geolocation.watchPosition(pos=>{
+    const lat = pos.coords.latitude, lng = pos.coords.longitude, acc = pos.coords.accuracy;
+    userLatLng = [lat,lng];
+
+    if(!userMarker){
+      userMarker = L.marker(userLatLng,{icon:L.divIcon({className:'user-icon', html:''})}).addTo(map);
+      accuracyCircle = L.circle(userLatLng,{radius:acc,color:'#007bff',fillOpacity:0.1}).addTo(map);
+      map.setView(userLatLng,17);
+    }else{
+      userMarker.setLatLng(userLatLng);
+      accuracyCircle.setLatLng(userLatLng);
+      accuracyCircle.setRadius(acc);
+    }
+  });
+}
+
+document.getElementById('locButton').addEventListener('click',()=>{
+  if(userLatLng) map.setView(userLatLng,17,{animate:true});
+});
+
+/* POSTOS DE GASOLINA */
+let clusterGroup = L.markerClusterGroup({chunkedLoading:true});
+
+async function safeFetch(url){
+  try{
+    const res = await fetch(url);
+    if(!res.ok) throw new Error();
+    return await res.json();
+  }catch{
+    console.warn("Erro ao carregar:",url);
+    return null;
+  }
+}
+
+(async()=>{
+  const postos = await safeFetch('postos.geojson'); 
+  if(postos && postos.features){
+    postos.features.forEach(f=>{
+      if(f.geometry?.type!=="Point") return;
+      const [lng,lat] = f.geometry.coordinates;
+      const props = f.properties;
+      const nome = props.name || "Posto";
+
+      const icon = L.divIcon({
+        className:'',
+        html:`
+          <div class="poi-ios">
+            <div class="icon">⛽</div>
+            <div class="label">${nome}</div>
+          </div>
+        `,
+        iconSize:[100,20],
+        iconAnchor:[10,10]
+      });
+
+      const marker = L.marker([lat,lng], {icon});
+      const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+      const mapsUrl = isIOS 
+        ? `http://maps.apple.com/?daddr=${lat},${lng}` 
+        : `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}`;
+
+      const popupContent = `
+        <div class="popup-card">
+          <div class="popup-title">${nome}</div>
+          <div class="popup-info"><strong>Marca:</strong> ${props.brand || ''}</div>
+          <a class="popup-btn" href="${mapsUrl}" target="_blank">Como chegar</a>
+        </div>
+      `;
+      marker.bindPopup(popupContent);
+      clusterGroup.addLayer(marker);
+    });
+    map.addLayer(clusterGroup);
+  }
+
+  document.getElementById('splash').style.opacity=0;
+  setTimeout(()=>document.getElementById('splash').style.display="none",600);
+  document.getElementById('map').style.opacity=1;
+})();
+
+/* PRAIAS E ONDAS - POLÍGONO DA BARRA DO JUCU */
+const surfMarkers = [];
+
+function corPorAltura(altura){
+  if(altura <= 0.5) return "#00ff00";
+  if(altura <= 1) return "#007bff";
+  if(altura <= 2) return "#ff0000";
+  if(altura <= 3) return "#8b0000";
+  return "#800080";
+}
+
+// Coordenadas aproximadas do polígono da Barra do Jucu
+const barraDoJucuCoords = [
+  [-20.4332328, -40.3197971],
+  [-20.4328000, -40.3188000],
+  [-20.4340000, -40.3185000],
+  [-20.4343000, -40.3197000]
+];
+
+// Expande o polígono aprox. 10 m²
+function centroPolygon(coords){
+  let latSum=0,lngSum=0;
+  coords.forEach(p=>{latSum+=p[0]; lngSum+=p[1];});
+  return [latSum/coords.length, lngSum/coords.length];
+}
+const centro = centroPolygon(barraDoJucuCoords);
+const fator = 1.0008; // aumenta cerca de 10 m²
+const barraDoJucuCoordsMaior = barraDoJucuCoords.map(([lat,lng])=>{
+  return [
+    centro[0] + (lat - centro[0])*fator,
+    centro[1] + (lng - centro[1])*fator
+  ];
+});
+
+// Cria o polígono
+const barraPolygon = L.polygon(barraDoJucuCoordsMaior, {
+  color: "#ffffff",
+  weight: 2,
+  fillColor: "#ffffff",
+  fillOpacity: 0.5
+}).addTo(map);
+
+// Label no centro do polígono
+const labelMarker = L.marker(centro, {
+  icon: L.divIcon({
+    className: "wave-label",
+    html: "Carregando ondas...",
+    iconSize: [120,30],
+    iconAnchor: [60,15]
+  })
+}).addTo(map);
+
+async function atualizarOndas(){
+  try{
+    const spots = await fetch("/ondas").then(r=>r.json());
+    const barra = spots.find(s => s.name === "Barra do Jucu");
+    if(!barra) return;
+
+    const altura = barra.waveHeight || 0;
+    const color = corPorAltura(altura);
+
+    barraPolygon.setStyle({fillColor: color, fillOpacity:0.5});
+    labelMarker.setIcon(L.divIcon({
+      className: "wave-label",
+      html: `${altura.toFixed(1)} m`,
+      iconSize: [120,30],
+      iconAnchor: [60,15]
+    }));
+
+  }catch(e){
+    console.warn("Erro ao carregar ondas:", e);
+  }
+}
+
+// Atualiza imediatamente e a cada 4h
+atualizarOndas();
+setInterval(atualizarOndas, 4*60*60*1000);
+
+</script>
+</body>
+</html>
